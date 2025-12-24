@@ -1,0 +1,270 @@
+#!/usr/bin/env Rscript
+
+# Suppress package startup messages
+suppressPackageStartupMessages({
+  library(readr)
+  library(dplyr)
+  library(tidyr)
+  library(GenomicRanges)
+  library(rtracklayer)
+})
+
+# =========================
+# File Paths - PLASMA EVs (13 samples)
+# =========================
+reads_paths <- c(
+  "C:/Users/Izon Science/OneDrive - UBC/repeat_elements_project_20250912/outputs/reditools3/reditools3_custom_plasmaevs/SRR9226322_reditools3_l10me3s1.txt",
+  "C:/Users/Izon Science/OneDrive - UBC/repeat_elements_project_20250912/outputs/reditools3/reditools3_custom_plasmaevs/SRR9226323_reditools3_l10me3s1.txt",
+  "C:/Users/Izon Science/OneDrive - UBC/repeat_elements_project_20250912/outputs/reditools3/reditools3_custom_plasmaevs/SRR9226324_reditools3_l10me3s1.txt",
+  "C:/Users/Izon Science/OneDrive - UBC/repeat_elements_project_20250912/outputs/reditools3/reditools3_custom_plasmaevs/SRR9226325_reditools3_l10me3s1.txt",
+  "C:/Users/Izon Science/OneDrive - UBC/repeat_elements_project_20250912/outputs/reditools3/reditools3_custom_plasmaevs/SRR9226329_reditools3_l10me3s1.txt",
+  "C:/Users/Izon Science/OneDrive - UBC/repeat_elements_project_20250912/outputs/reditools3/reditools3_custom_plasmaevs/SRR9226330_reditools3_l10me3s1.txt",
+  "C:/Users/Izon Science/OneDrive - UBC/repeat_elements_project_20250912/outputs/reditools3/reditools3_custom_plasmaevs/SRR9226331_reditools3_l10me3s1.txt",
+  "C:/Users/Izon Science/OneDrive - UBC/repeat_elements_project_20250912/outputs/reditools3/reditools3_custom_plasmaevs/SRR9226332_reditools3_l10me3s1.txt",
+  "C:/Users/Izon Science/OneDrive - UBC/repeat_elements_project_20250912/outputs/reditools3/reditools3_custom_plasmaevs/SRR9226335_reditools3_l10me3s1.txt",
+  "C:/Users/Izon Science/OneDrive - UBC/repeat_elements_project_20250912/outputs/reditools3/reditools3_custom_plasmaevs/SRR9226336_reditools3_l10me3s1.txt",
+  "C:/Users/Izon Science/OneDrive - UBC/repeat_elements_project_20250912/outputs/reditools3/reditools3_custom_plasmaevs/SRR9226337_reditools3_l10me3s1.txt",
+  "C:/Users/Izon Science/OneDrive - UBC/repeat_elements_project_20250912/outputs/reditools3/reditools3_custom_plasmaevs/SRR9226338_reditools3_l10me3s1.txt",
+  "C:/Users/Izon Science/OneDrive - UBC/repeat_elements_project_20250912/outputs/reditools3/reditools3_custom_plasmaevs/SRR30850084_reditools3_l10me3s1.txt"
+)
+
+gtf_path <- "C:/Users/Izon Science/OneDrive - UBC/repeat_elements_project_20250912/gencode.v43.annotation.gtf/gencode.v43.annotation.gtf"
+rmsk_path <- "C:/Users/Izon Science/OneDrive - UBC/repeat_elements_project_20250912/rmsk_hg38.txt"
+output_dir <- "C:/Users/Izon Science/OneDrive - UBC/repeat_elements_project_20250912/outputs/mapped_reads_plasmaevs/"
+
+# =========================
+# Load RepeatMasker Annotation (Shared across all files)
+# =========================
+message("Loading RepeatMasker annotation...")
+rmsk_cols <- c(
+  "bin", "swScore", "milliDiv", "milliDel", "milliIns",
+  "genoName", "genoStart", "genoEnd", "genoLeft", "strand",
+  "repName", "repClass", "repFamily", "repStart", "repEnd", "repLeft", "id"
+)
+
+rmsk <- read_tsv(rmsk_path, col_names = rmsk_cols, col_types = cols(.default = col_guess()), progress = FALSE) %>%
+  mutate(
+    genoName = as.character(genoName),
+    start = as.integer(genoStart) + 1L,  # Convert UCSC 0-based start to 1-based inclusive
+    end = as.integer(genoEnd),
+    strand = ifelse(strand %in% c("+", "-"), strand, "*")
+  ) %>%
+  filter(!is.na(start), !is.na(end), end >= start)
+
+message("  Creating RepeatMasker GRanges...")
+rmsk_gr <- makeGRangesFromDataFrame(
+  rmsk,
+  seqnames.field = "genoName",
+  start.field = "start",
+  end.field = "end",
+  strand.field = "strand",
+  keep.extra.columns = TRUE
+)
+message("  Loaded ", length(rmsk_gr), " RepeatMasker elements")
+
+# =========================
+# Load Gencode GTF (Shared across all files)
+# =========================
+message("Loading Gencode GTF annotation...")
+if (!file.exists(gtf_path)) stop("GTF file not found: ", gtf_path)
+
+tryCatch({
+  gtf <- import(gtf_path)
+}, error = function(e) {
+  message("  Standard import failed, using fallback method...")
+  gtf_df <<- rtracklayer::readGFF(gtf_path)
+  
+  # Ensure required columns exist
+  if (!("gene_id" %in% names(gtf_df))) gtf_df$gene_id <<- NA
+  if (!("gene_name" %in% names(gtf_df))) gtf_df$gene_name <<- NA
+  if (!("gene_type" %in% names(gtf_df))) gtf_df$gene_type <<- NA
+  
+  # Filter NA coordinates
+  gtf_df <- gtf_df[!is.na(gtf_df$start) & !is.na(gtf_df$end), ]
+  
+  gtf <<- GRanges(
+    seqnames = gtf_df$seqid,
+    ranges = IRanges(start = as.integer(gtf_df$start), end = as.integer(gtf_df$end)),
+    strand = gtf_df$strand,
+    type = gtf_df$type,
+    gene_id = gtf_df$gene_id,
+    gene_name = gtf_df$gene_name,
+    gene_type = gtf_df$gene_type
+  )
+})
+
+# Validate GTF
+if (!inherits(gtf, "GRanges")) {
+  stop("Failed to load GTF file as GRanges object")
+}
+
+# Remove NA coordinates
+gtf <- gtf[!is.na(start(gtf)) & !is.na(end(gtf))]
+message("  Total GTF features: ", length(gtf))
+
+# Extract gene features - comprehensive approach to avoid bias
+message("  Extracting gene features...")
+# Create comprehensive gene region by merging all transcript regions per gene
+genes_all <- gtf[!is.na(mcols(gtf)$gene_id)]
+genes_merged <- disjoin(split(genes_all, mcols(genes_all)$gene_id))
+genes_merged_df <- data.frame(
+  seqnames = seqnames(genes_merged),
+  start = start(genes_merged),
+  end = end(genes_merged),
+  stringsAsFactors = FALSE
+)
+
+# Get gene metadata (one per gene)
+gene_metadata <- as.data.frame(mcols(gtf[gtf$type == "gene"])) %>%
+  select(gene_id, gene_name, gene_type) %>%
+  distinct()
+
+message("  Extracted: ", length(unique(gtf[gtf$type == "gene"]$gene_id)), " genes")
+
+# Create output directory
+if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
+
+# =========================
+# Process Each Reads File
+# =========================
+message("\n=== Starting mapping process ===\n")
+
+for (reads_path in reads_paths) {
+  tryCatch({
+    # Extract sample name
+    sample_name <- gsub("_reditools3_l10me3s1\\.txt$", "", basename(reads_path))
+    message("Processing: ", sample_name)
+    
+    # Check if file exists
+    if (!file.exists(reads_path)) {
+      message("  WARNING: File not found")
+      next
+    }
+    
+    # Load reads
+    reads <- read_tsv(reads_path, col_types = cols(.default = col_guess()), progress = FALSE) %>%
+      mutate(
+        Region = paste0("chr", as.character(Region)),
+        Position = as.integer(Position),
+        Strand = as.character(Strand)
+      )
+    
+    n_reads <- nrow(reads)
+    message("  Loaded ", n_reads, " reads")
+    
+    # Create GRanges for reads
+    reads_gr <- makeGRangesFromDataFrame(
+      reads,
+      seqnames.field = "Region",
+      start.field = "Position",
+      end.field = "Position",
+      strand.field = "Strand",
+      keep.extra.columns = TRUE
+    )
+    
+    # ===== RepeatMasker Mapping (Unbiased) =====
+    hits_rmsk <- findOverlaps(reads_gr, rmsk_gr, ignore.strand = TRUE)
+    message("  RepeatMasker overlaps: ", length(hits_rmsk))
+    
+    rmsk_hits <- as.data.frame(hits_rmsk) %>%
+      transmute(
+        read_idx = queryHits,
+        repName = rmsk$repName[subjectHits],
+        repClass = rmsk$repClass[subjectHits],
+        repFamily = rmsk$repFamily[subjectHits]
+      ) %>%
+      distinct(read_idx, .keep_all = TRUE)
+    
+    # ===== Gene Mapping (Unbiased - full gene regions) =====
+    # Build comprehensive gene GRanges once per sample
+    genes_gr <- GRanges(
+      seqnames = genes_merged_df$seqnames,
+      ranges = IRanges(start = genes_merged_df$start, end = genes_merged_df$end)
+    )
+    
+    # Map reads to full gene regions
+    hits_gene <- findOverlaps(reads_gr, genes_gr, ignore.strand = TRUE)
+    message("  Gene region overlaps: ", length(hits_gene))
+    
+    # Get gene info for each hit
+    gencode_hits <- NULL
+    if (length(hits_gene) > 0) {
+      gencode_hits <- as.data.frame(hits_gene) %>%
+        transmute(
+          read_idx = queryHits,
+          gene_idx = subjectHits,
+          gene_id = NA,
+          gene_name = NA,
+          gene_type = NA
+        )
+      
+      # Map back to gene metadata (more efficient approach)
+      for (i in 1:nrow(gencode_hits)) {
+        gene_region <- genes_merged_df[gencode_hits$gene_idx[i], ]
+        # Find matching gene in GTF
+        matching_genes <- gtf[
+          seqnames(gtf) == gene_region$seqnames &
+            start(gtf) <= gene_region$start &
+            end(gtf) >= gene_region$end &
+            gtf$type == "gene"
+        ]
+        if (length(matching_genes) > 0) {
+          gencode_hits$gene_id[i] <- matching_genes$gene_id[1]
+          gencode_hits$gene_name[i] <- matching_genes$gene_name[1]
+          gencode_hits$gene_type[i] <- matching_genes$gene_type[1]
+        }
+      }
+      
+      gencode_hits <- gencode_hits %>%
+        select(-gene_idx) %>%
+        distinct(read_idx, .keep_all = TRUE)
+    } else {
+      gencode_hits <- data.frame(read_idx = integer(), gene_id = character(), 
+                                  gene_name = character(), gene_type = character())
+    }
+    
+    total_gene_mapped <- nrow(gencode_hits)
+    message("  Reads with gene mapping: ", total_gene_mapped, " (", round(100*total_gene_mapped/n_reads, 1), "%)")
+    
+    # ===== Combine All Results with Classification =====
+    combined_hits <- reads %>%
+      mutate(read_idx = row_number()) %>%
+      left_join(rmsk_hits, by = "read_idx") %>%
+      left_join(gencode_hits, by = "read_idx") %>%
+      mutate(
+        has_repeat = !is.na(repName),
+        has_gene = !is.na(gene_id),
+        classification = case_when(
+          has_repeat & has_gene ~ "Repeat+Gene",
+          has_repeat & !has_gene ~ "Repeat_only",
+          !has_repeat & has_gene ~ "Gene_only",
+          TRUE ~ "Intergenic"
+        )
+      ) %>%
+      select(Region, Position, Reference, Strand, everything(), -read_idx, -has_repeat, -has_gene)
+    
+    # Save output
+    output_path <- file.path(output_dir, paste0(sample_name, "_mapped.csv"))
+    write_csv(combined_hits, output_path)
+    message("  Saved: ", output_path)
+    
+    # Print classification summary
+    class_summary <- combined_hits %>%
+      group_by(classification) %>%
+      summarize(count = n(), .groups = 'drop') %>%
+      arrange(desc(count))
+    
+    message("  Classification summary:")
+    for (i in 1:nrow(class_summary)) {
+      pct <- round(100 * class_summary$count[i] / nrow(combined_hits), 1)
+      message("    ", class_summary$classification[i], ": ", class_summary$count[i], " (", pct, "%)")
+    }
+    message("")
+    
+  }, error = function(e) {
+    message("  ERROR: ", e$message)
+    message("")
+  })
+}
+
+message("=== Mapping complete ===")
